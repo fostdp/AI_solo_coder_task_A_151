@@ -1,0 +1,196 @@
+services:
+  timescale:
+    image: timescale/timescaledb:2.15.3-pg16
+    container_name: waterwheel-timescaledb
+    environment:
+      - POSTGRES_DB=${DB_NAME:-waterwheel_simulation}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
+      - TZ=${TZ:-Asia/Shanghai}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./database/timescaledb_policies.sql:/docker-entrypoint-initdb.d/02-policies.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-waterwheel_simulation}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - waterwheel-network
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0.18
+    container_name: waterwheel-mqtt
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+      - "9001:9001"
+    volumes:
+      - mosquitto-config:/mosquitto/config
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    command: sh -c "echo 'listener 1883' > /mosquitto/config/mosquitto.conf && echo 'allow_anonymous true' >> /mosquitto/config/mosquitto.conf && mosquitto -c /mosquitto/config/mosquitto.conf"
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/# -C 1 -E || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - waterwheel-network
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: waterwheel-prometheus
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - waterwheel-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: waterwheel-backend
+    environment:
+      - DB_HOST=timescale
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-waterwheel_simulation}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-postgres}
+      - DB_POOL_MAX=${DB_POOL_MAX:-20}
+      - DB_POOL_MIN=${DB_POOL_MIN:-5}
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - MQTT_USER=${MQTT_USER:-admin}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-admin}
+      - SERVER_PORT=8080
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - JAVA_OPTS=-Xmx${JAVA_HEAP:-512}m -Xms${JAVA_HEAP_MIN:-256}m
+      - TZ=${TZ:-Asia/Shanghai}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    depends_on:
+      timescale:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/api/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - waterwheel-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: waterwheel-frontend
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - waterwheel-network
+
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: waterwheel-simulator
+    environment:
+      - API_BASE=http://backend:8080/api/v1
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - MQTT_USER=${MQTT_USER:-admin}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-admin}
+      - MQTT_TOPIC=waterwheel/sensor
+      - INTERVAL=${SIMULATOR_INTERVAL:-5}
+      - CHAIN_SPEED=${CHAIN_SPEED:-1.0}
+      - SCRAPER_SHAPE=${SCRAPER_SHAPE:-flat}
+      - TZ=${TZ:-Asia/Shanghai}
+    command: ["--mqtt", "mosquitto"]
+    depends_on:
+      backend:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - waterwheel-network
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: waterwheel-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - TZ=${TZ:-Asia/Shanghai}
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    depends_on:
+      - prometheus
+      - timescale
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - waterwheel-network
+
+volumes:
+  timescale-data:
+    driver: local
+  mosquitto-config:
+    driver: local
+  mosquitto-data:
+    driver: local
+  mosquitto-log:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  waterwheel-network:
+    driver: bridge

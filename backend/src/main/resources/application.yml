@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
   servlet:
     context-path: /api
 
@@ -15,13 +15,13 @@ spring:
       - config/alert-thresholds.yml
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/waterwheel_simulation
-    username: postgres
-    password: postgres
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:waterwheel_simulation}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: 20
-      minimum-idle: 5
+      maximum-pool-size: ${DB_POOL_MAX:20}
+      minimum-idle: ${DB_POOL_MIN:5}
       connection-timeout: 30000
 
   jpa:
@@ -43,16 +43,37 @@ spring:
     time-zone: Asia/Shanghai
 
 mqtt:
-  broker: tcp://localhost:1883
-  client-id: waterwheel-backend
-  username: admin
-  password: admin
+  broker: tcp://${MQTT_HOST:localhost}:${MQTT_PORT:1883}
+  client-id: waterwheel-backend-${random.int}
+  username: ${MQTT_USER:admin}
+  password: ${MQTT_PASSWORD:admin}
   topic:
     alert: waterwheel/alert
     sensor: waterwheel/sensor
   qos: 1
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+    metrics:
+      enabled: true
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+        step: 10s
+    tags:
+      application: ${spring.application.name}
+
 logging:
   level:
-    com.waterwheel.chaintransmission: DEBUG
+    com.waterwheel.chaintransmission: ${LOG_LEVEL:DEBUG}
     org.hibernate.SQL: WARN
