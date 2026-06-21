@@ -7,6 +7,13 @@ spring:
   application:
     name: waterwheel-chain-transmission
 
+  config:
+    import:
+      - config/dtu-receiver.yml
+      - config/chain-dynamics.yml
+      - config/efficiency-optimization.yml
+      - config/alert-thresholds.yml
+
   datasource:
     url: jdbc:postgresql://localhost:5432/waterwheel_simulation
     username: postgres
@@ -44,40 +51,6 @@ mqtt:
     alert: waterwheel/alert
     sensor: waterwheel/sensor
   qos: 1
-
-simulation:
-  chain:
-    default-link-mass: 0.25
-    default-link-length: 0.125
-    default-stiffness: 500000.0
-    default-damping: 150.0
-    default-friction: 0.15
-  dynamics:
-    time-step: 0.001
-    simulation-duration: 2.0
-    max-iterations: 2000
-
-optimization:
-  response-surface:
-    design-points: 15
-    max-iterations: 50
-    convergence-tolerance: 1.0e-6
-  scraper:
-    min-depth: 0.05
-    max-depth: 0.20
-    min-width: 0.10
-    max-width: 0.40
-    min-angle: 15.0
-    max-angle: 60.0
-  chain-speed:
-    min: 0.5
-    max: 3.0
-
-alert:
-  check-interval-ms: 30000
-  chain-tension-warning-ratio: 0.75
-  chain-tension-critical-ratio: 0.90
-  water-flow-min-ratio: 0.6
 
 logging:
   level:

@@ -1,0 +1,6 @@
+alert:
+  check-interval-ms: 30000
+  chain-tension-warning-ratio: 0.75
+  chain-tension-critical-ratio: 0.90
+  water-flow-min-ratio: 0.6
+  dedup-window-ms: 300000

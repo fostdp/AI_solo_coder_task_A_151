@@ -1,0 +1,19 @@
+simulation:
+  chain:
+    default:
+      link-mass: 0.25
+      link-length: 0.125
+      stiffness: 500000.0
+      damping: 150.0
+      friction: 0.15
+      allowable-tension: 15000.0
+  dynamics:
+    time-step: 0.001
+    simulation-duration: 2.0
+    max-iterations: 2000
+    grid-cell-multiplier: 2.5
+    max-adaptive-substeps: 4
+    high-speed-threshold: 3.0
+    collision-check-stride-low-speed: 2
+    collision-restitution: 0.3
+    gravity: 9.81

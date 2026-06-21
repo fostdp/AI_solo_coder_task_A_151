@@ -22,38 +22,74 @@ const CONFIG = {
     scraperDepth: 0.12
 };
 
-function initWaterwheelViewer() {
-    const canvas = document.getElementById('three-canvas');
+const ChainPump3D = {
+    init: function() {
+        const canvas = document.getElementById('three-canvas');
 
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0a1a);
-    scene.fog = new THREE.Fog(0x0a0a1a, 15, 35);
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a0a1a);
+        scene.fog = new THREE.Fog(0x0a0a1a, 15, 35);
 
-    camera = new THREE.PerspectiveCamera(50, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
-    camera.position.set(8, 6, 10);
-    camera.lookAt(3.5, 0.5, 0);
+        camera = new THREE.PerspectiveCamera(50, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
+        camera.position.set(8, 6, 10);
+        camera.lookAt(3.5, 0.5, 0);
 
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    renderer.setSize(canvas.clientWidth, canvas.clientHeight);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+        renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    setupLights();
-    setupGroundAndGrid();
-    createWaterwheelFrame();
-    createSprockets();
-    createChain();
-    createScrapers();
-    createWaterTrough();
-    createWaterParticles();
+        setupLights();
+        setupGroundAndGrid();
+        createWaterwheelFrame();
+        createSprockets();
+        createChain();
+        createScrapers();
+        createWaterTrough();
+        createWaterParticles();
 
-    setupControls();
-    setupCanvasEvents();
+        setupControls();
+        setupCanvasEvents();
 
-    animate();
-    window.addEventListener('resize', onWindowResize);
-}
+        animate();
+        window.addEventListener('resize', onWindowResize);
+
+        ChainPump3D.scene = scene;
+        ChainPump3D.camera = camera;
+        ChainPump3D.renderer = renderer;
+        ChainPump3D.chainLinkMesh = chainLinkMesh;
+        ChainPump3D.pinMesh = pinMesh;
+        ChainPump3D.scraperMesh = scraperMesh;
+        ChainPump3D.waterParticles = waterParticles;
+        ChainPump3D.drivingSprocket = drivingSprocket;
+        ChainPump3D.drivenSprocket = drivenSprocket;
+    },
+
+    updateChainLinkPositions: function(positions) {
+        const tmpScale = new THREE.Vector3(1, 1, 1);
+        Object.keys(positions).forEach((id, idx) => {
+            if (idx < CONFIG.numLinks && positions[id] && chainLinkMesh) {
+                const [x, y, z] = positions[id];
+                const tmpMatrix = new THREE.Matrix4();
+                chainLinkMesh.getMatrixAt(idx, tmpMatrix);
+                const tmpPos = new THREE.Vector3();
+                const tmpQ = new THREE.Quaternion();
+                tmpMatrix.decompose(tmpPos, tmpQ, tmpScale);
+
+                chainLinkDummy.position.set(x, y + CONFIG.sprocketRadius, z || 0);
+                chainLinkDummy.quaternion.copy(tmpQ);
+                chainLinkDummy.updateMatrix();
+                chainLinkMesh.setMatrixAt(idx, chainLinkDummy.matrix);
+            }
+        });
+        chainLinkMesh.instanceMatrix.needsUpdate = true;
+    },
+
+    getConfig: function() {
+        return CONFIG;
+    }
+};
 
 function setupLights() {
     const ambient = new THREE.AmbientLight(0x404060, 0.5);
@@ -249,8 +285,6 @@ function createChain() {
 }
 
 function createScrapers() {
-    const scraperGroupGeo = new THREE.Group();
-
     const plateGeo = new THREE.BoxGeometry(CONFIG.scraperWidth, CONFIG.scraperHeight, 0.02);
     const sideGeo = new THREE.BoxGeometry(CONFIG.scraperWidth, 0.02, CONFIG.scraperDepth);
 
@@ -272,9 +306,6 @@ function createScrapers() {
 }
 
 function mergeScraperGeometries(plateGeo, sideGeo) {
-    const plateM = new THREE.Matrix4().makeTranslation(0, 0, 0);
-    const sideM = new THREE.Matrix4().makeTranslation(0, CONFIG.scraperHeight / 2, CONFIG.scraperDepth / 2);
-    plateGeo.applyMatrix4(new THREE.Matrix4());
     const p = plateGeo.attributes.position.array.slice();
     const s = sideGeo.attributes.position.array.slice();
 
@@ -294,9 +325,6 @@ function mergeScraperGeometries(plateGeo, sideGeo) {
     geo.computeVertexNormals();
 
     const indices = [];
-    const plateTriCount = plateGeo.index ? plateGeo.index.count / 3 : plateGeo.attributes.position.count / 3;
-    const sideTriCount = sideGeo.index ? sideGeo.index.count / 3 : sideGeo.attributes.position.count / 3;
-
     const src = (g) => {
         const tri = [];
         const idx = g.index ? g.index.array : null;
@@ -599,27 +627,6 @@ function updateWaterParticles(dt) {
     }
 }
 
-function updateChainLinkPositions(positions) {
-    const tmpQuat = new THREE.Quaternion();
-    const tmpScale = new THREE.Vector3(1, 1, 1);
-    Object.keys(positions).forEach((id, idx) => {
-        if (idx < CONFIG.numLinks && positions[id] && chainLinkMesh) {
-            const [x, y, z] = positions[id];
-            const tmpMatrix = new THREE.Matrix4();
-            chainLinkMesh.getMatrixAt(idx, tmpMatrix);
-            const tmpPos = new THREE.Vector3();
-            const tmpQ = new THREE.Quaternion();
-            tmpMatrix.decompose(tmpPos, tmpQ, tmpScale);
-
-            chainLinkDummy.position.set(x, y + CONFIG.sprocketRadius, z || 0);
-            chainLinkDummy.quaternion.copy(tmpQ);
-            chainLinkDummy.updateMatrix();
-            chainLinkMesh.setMatrixAt(idx, chainLinkDummy.matrix);
-        }
-    });
-    chainLinkMesh.instanceMatrix.needsUpdate = true;
-}
-
 function setupControls() {
     let isDragging = false;
     let prevX = 0, prevY = 0;
@@ -715,4 +722,10 @@ function animate() {
     renderer.render(scene, camera);
 }
 
-window.addEventListener('DOMContentLoaded', initWaterwheelViewer);
+window.ChainPump3D = ChainPump3D;
+
+window.addEventListener('DOMContentLoaded', function() {
+    if (document.getElementById('three-canvas')) {
+        ChainPump3D.init();
+    }
+});

@@ -1,0 +1,12 @@
+dtu:
+  receiver:
+    validation-enabled: true
+    min-sprocket-speed: 0.0
+    max-sprocket-speed: 200.0
+    min-chain-tension: 0.0
+    max-chain-tension: 100000.0
+    min-water-flow: 0.0
+    max-water-flow: 100000.0
+    min-scraper-load: 0.0
+    max-scraper-load: 50000.0
+    publish-events: true

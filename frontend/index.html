@@ -254,8 +254,8 @@
 
         <div class="panel">
             <div class="panel-title">仿真控制</div>
-            <button class="btn btn-primary" onclick="runChainSimulation()">🔬 运行链传动动力学仿真</button>
-            <button class="btn btn-secondary" onclick="runOptimization()">📈 执行提水效率优化</button>
+            <button id="runSimBtn" class="btn btn-primary" onclick="EfficiencyPanel.runChainSimulation()">🔬 运行链传动动力学仿真</button>
+            <button id="runOptimBtn" class="btn btn-secondary" onclick="EfficiencyPanel.runOptimization()">📈 执行提水效率优化</button>
         </div>
 
         <div class="panel">
@@ -340,7 +340,7 @@
 
         <div class="panel">
             <div class="panel-title">告警信息</div>
-            <button class="btn btn-secondary" onclick="loadAlerts()" style="margin-bottom:8px">刷新告警</button>
+            <button id="refreshAlertsBtn" class="btn btn-secondary" onclick="EfficiencyPanel.loadAlerts()" style="margin-bottom:8px">刷新告警</button>
             <div id="alertList">
                 <div style="color:#666;font-size:12px;text-align:center;padding:10px">暂无告警</div>
             </div>
@@ -350,199 +350,8 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="js/waterwheel-viewer.js"></script>
+<script src="js/chain_pump_3d.js"></script>
+<script src="js/efficiency_panel.js"></script>
 <script src="js/data-handler.js"></script>
-<script>
-    const API_BASE = 'http://localhost:8080/api/v1';
-    let currentDeviceId = 1;
-    let tensionChart, waterFlowChart;
-
-    function updateTime() {
-        document.getElementById('currentTime').textContent = new Date().toLocaleTimeString('zh-CN');
-    }
-    setInterval(updateTime, 1000);
-    updateTime();
-
-    async function loadDevices() {
-        try {
-            const res = await fetch(API_BASE + '/devices');
-            const devices = await res.json();
-            const list = document.getElementById('deviceList');
-            list.innerHTML = devices.map(d => `
-                <div class="device-item ${d.deviceId === currentDeviceId ? 'active' : ''}" onclick="selectDevice(${d.deviceId})">
-                    <div class="device-name">${d.deviceName}</div>
-                    <div class="device-location">📍 ${d.location || '未知位置'}</div>
-                </div>
-            `).join('');
-            if (devices.length > 0 && !currentDeviceId) {
-                selectDevice(devices[0].deviceId);
-            }
-        } catch (e) {
-            console.error('加载设备失败:', e);
-        }
-    }
-
-    function selectDevice(deviceId) {
-        currentDeviceId = deviceId;
-        document.querySelectorAll('.device-item').forEach(el => el.classList.remove('active'));
-        event?.target?.closest('.device-item')?.classList.add('active');
-        loadLatestSensorData();
-        loadAlerts();
-    }
-
-    async function loadLatestSensorData() {
-        try {
-            const res = await fetch(API_BASE + `/sensor-data/${currentDeviceId}/latest`);
-            if (!res.ok) return;
-            const data = await res.json();
-
-            document.getElementById('statSpeed').textContent = data.sprocketSpeed?.toFixed(2) || '--';
-            const tensionEl = document.getElementById('statTension');
-            tensionEl.textContent = data.chainTension?.toFixed(1) || '--';
-            tensionEl.className = 'stat-card-value ' + (data.chainTension > 10000 ? 'danger' : data.chainTension > 7000 ? 'warning' : '');
-            document.getElementById('statFlow').textContent = data.waterFlow?.toFixed(1) || '--';
-            document.getElementById('statLoad').textContent = data.scraperLoad?.toFixed(1) || '--';
-
-            addTensionDataPoint(data.chainTension);
-            addWaterFlowDataPoint(data.waterFlow);
-        } catch (e) {
-            console.error('加载传感器数据失败:', e);
-        }
-    }
-
-    async function loadAlerts() {
-        try {
-            const res = await fetch(API_BASE + '/alerts/recent?hours=1');
-            const alerts = await res.json();
-            const list = document.getElementById('alertList');
-            if (alerts.length === 0) {
-                list.innerHTML = '<div style="color:#666;font-size:12px;text-align:center;padding:10px">暂无告警</div>';
-                return;
-            }
-            list.innerHTML = alerts.slice(0, 10).map(a => `
-                <div class="alert-item ${a.alertLevel}">
-                    <div class="alert-type">${a.alertLevel} - ${a.alertType}</div>
-                    <div class="alert-msg">${a.alertMessage}</div>
-                    <div class="alert-time">${new Date(a.alertTime).toLocaleString('zh-CN')}</div>
-                </div>
-            `).join('');
-        } catch (e) {
-            console.error('加载告警失败:', e);
-        }
-    }
-
-    async function runChainSimulation() {
-        try {
-            document.querySelector('.btn-primary').textContent = '⏳ 仿真计算中...';
-            const res = await fetch(API_BASE + `/simulation/chain-dynamics/${currentDeviceId}?inputSpeedRPM=15.0&inputTorque=50.0`, {method: 'POST'});
-            const result = await res.json();
-
-            document.getElementById('simMaxTension').textContent = result.maxTension + ' N';
-            document.getElementById('simMinTension').textContent = result.minTension + ' N';
-            document.getElementById('simAvgTension').textContent = result.avgTension + ' N';
-            const resEl = document.getElementById('simResonance');
-            resEl.textContent = result.resonanceRisk ? '⚠️ 有风险' : '✓ 正常';
-            resEl.className = 'data-value ' + (result.resonanceRisk ? 'warning' : 'success');
-            document.getElementById('simFreq').textContent = (result.vibrationFrequencies?.[0] || '--') + ' Hz';
-            document.getElementById('simDuration').textContent = result.simulationDurationMs + ' ms';
-
-            if (result.linkPositions) {
-                updateChainLinkPositions(result.linkPositions);
-            }
-
-            document.querySelector('.btn-primary').textContent = '🔬 运行链传动动力学仿真';
-        } catch (e) {
-            console.error('仿真运行失败:', e);
-            document.querySelector('.btn-primary').textContent = '🔬 运行链传动动力学仿真';
-        }
-    }
-
-    async function runOptimization() {
-        try {
-            const res = await fetch(API_BASE + `/optimization/efficiency/${currentDeviceId}`, {method: 'POST'});
-            const result = await res.json();
-
-            document.getElementById('optimizationResult').innerHTML = `
-                <div class="data-row"><span class="data-label">最优刮板深度</span><span class="data-value">${result.optimalScraperDepth} m</span></div>
-                <div class="data-row"><span class="data-label">最优刮板宽度</span><span class="data-value">${result.optimalScraperWidth} m</span></div>
-                <div class="data-row"><span class="data-label">最优刮板角度</span><span class="data-value">${result.optimalScraperAngle} °</span></div>
-                <div class="data-row"><span class="data-label">最优链速</span><span class="data-value">${result.optimalChainSpeed} m/s</span></div>
-                <div class="data-row"><span class="data-label">预测最大提水量</span><span class="data-value success">${result.predictedMaxWaterFlow} L/h</span></div>
-                <div class="data-row"><span class="data-label">效率提升</span><span class="data-value success">${result.efficiencyImprovement} %</span></div>
-                <div class="data-row"><span class="data-label">迭代收敛</span><span class="data-value">${result.convergence ? '✓ 是' : '✗ 否'}</span></div>
-                <div class="data-row"><span class="data-label">迭代次数</span><span class="data-value">${result.iterations}</span></div>
-            `;
-        } catch (e) {
-            console.error('优化运行失败:', e);
-        }
-    }
-
-    function initCharts() {
-        const chartOptions = {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-                x: { display: false },
-                y: {
-                    grid: { color: 'rgba(255,255,255,0.05)' },
-                    ticks: { color: '#888', font: { size: 10 } }
-                }
-            },
-            elements: {
-                point: { radius: 0 },
-                line: { tension: 0.4, borderWidth: 2 }
-            },
-            animation: { duration: 300 }
-        };
-
-        tensionChart = new Chart(document.getElementById('tensionChart'), {
-            type: 'line',
-            data: {
-                labels: Array(30).fill(''),
-                datasets: [{
-                    data: Array(30).fill(0),
-                    borderColor: '#e94560',
-                    backgroundColor: 'rgba(233,69,96,0.1)',
-                    fill: true
-                }]
-            },
-            options: chartOptions
-        });
-
-        waterFlowChart = new Chart(document.getElementById('waterFlowChart'), {
-            type: 'line',
-            data: {
-                labels: Array(30).fill(''),
-                datasets: [{
-                    data: Array(30).fill(0),
-                    borderColor: '#3498db',
-                    backgroundColor: 'rgba(52,152,219,0.1)',
-                    fill: true
-                }]
-            },
-            options: chartOptions
-        });
-    }
-
-    function addTensionDataPoint(value) {
-        if (!tensionChart || value == null) return;
-        tensionChart.data.datasets[0].data.shift();
-        tensionChart.data.datasets[0].data.push(value);
-        tensionChart.update('none');
-    }
-
-    function addWaterFlowDataPoint(value) {
-        if (!waterFlowChart || value == null) return;
-        waterFlowChart.data.datasets[0].data.shift();
-        waterFlowChart.data.datasets[0].data.push(value);
-        waterFlowChart.update('none');
-    }
-
-    initCharts();
-    loadDevices();
-    setInterval(() => loadLatestSensorData(), 5000);
-    setInterval(loadAlerts, 10000);
-</script>
 </body>
 </html>

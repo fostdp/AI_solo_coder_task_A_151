@@ -24,6 +24,9 @@ public class WaterwheelController {
     @Autowired
     private WaterwheelService waterwheelService;
 
+    @Autowired
+    private com.waterwheel.chaintransmission.dtu_receiver.service.DtuReceiverService dtuReceiverService;
+
     @GetMapping("/devices")
     public ResponseEntity<List<WaterwheelDevice>> getAllDevices() {
         return ResponseEntity.ok(waterwheelService.getAllDevices());
@@ -51,19 +54,8 @@ public class WaterwheelController {
 
     @PostMapping("/sensor-data/batch")
     public ResponseEntity<Map<String, Object>> receiveBatchSensorData(@RequestBody List<SensorDataDTO> dtos) {
-        Map<String, Object> result = new HashMap<>();
-        int successCount = 0;
-        for (SensorDataDTO dto : dtos) {
-            try {
-                waterwheelService.saveSensorData(dto);
-                successCount++;
-            } catch (Exception e) {
-                log.error("批量保存传感器数据失败: {}", e.getMessage());
-            }
-        }
-        result.put("total", dtos.size());
-        result.put("success", successCount);
-        result.put("failed", dtos.size() - successCount);
+        Map<String, Integer> counts = dtuReceiverService.receiveBatch(dtos);
+        Map<String, Object> result = new HashMap<>(counts);
         return ResponseEntity.ok(result);
     }
 

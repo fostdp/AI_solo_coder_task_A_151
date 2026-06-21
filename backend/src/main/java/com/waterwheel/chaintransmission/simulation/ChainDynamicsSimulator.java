@@ -1,10 +1,12 @@
 package com.waterwheel.chaintransmission.simulation;
 
+import com.waterwheel.chaintransmission.chain_simulator.config.ChainDynamicsProperties;
+import com.waterwheel.chaintransmission.chain_simulator.config.ChainLinkDefaultProperties;
 import com.waterwheel.chaintransmission.dto.ChainDynamicsResultDTO;
 import com.waterwheel.chaintransmission.entity.ChainLinkParams;
 import com.waterwheel.chaintransmission.entity.WaterwheelDevice;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -13,28 +15,29 @@ import java.util.*;
 @Component
 public class ChainDynamicsSimulator {
 
-    @Value("${simulation.dynamics.time-step:0.001}")
-    private double timeStep;
+    @Autowired
+    private ChainDynamicsProperties dynamicsProperties;
 
-    @Value("${simulation.dynamics.simulation-duration:2.0}")
-    private double simulationDuration;
+    @Autowired
+    private ChainLinkDefaultProperties defaultChainProperties;
 
-    @Value("${simulation.dynamics.max-iterations:2000}")
-    private int maxIterations;
-
-    private static final double GRAVITY = 9.81;
-    private static final double COLLISION_RESTITUTION = 0.3;
     private static final double COLLISION_THRESHOLD = 1e-6;
-    private static final double GRID_CELL_MULTIPLIER = 2.5;
-    private static final int MAX_ADAPTIVE_SUBSTEPS = 4;
-    private static final double HIGH_SPEED_THRESHOLD = 3.0;
-    private static final int COLLISION_CHECK_STRIDE_LOW_SPEED = 2;
 
     public ChainDynamicsResultDTO simulate(WaterwheelDevice device,
                                             ChainLinkParams params,
                                             double inputSpeedRPM,
                                             double inputTorque) {
         long startTime = System.currentTimeMillis();
+
+        double timeStep = dynamicsProperties.getTimeStep();
+        double simulationDuration = dynamicsProperties.getSimulationDuration();
+        int maxIterations = dynamicsProperties.getMaxIterations();
+        double GRAVITY = dynamicsProperties.getGravity();
+        double COLLISION_RESTITUTION = dynamicsProperties.getCollisionRestitution();
+        double GRID_CELL_MULTIPLIER = dynamicsProperties.getGridCellMultiplier();
+        int MAX_ADAPTIVE_SUBSTEPS = dynamicsProperties.getMaxAdaptiveSubsteps();
+        double HIGH_SPEED_THRESHOLD = dynamicsProperties.getHighSpeedThreshold();
+        int COLLISION_CHECK_STRIDE_LOW_SPEED = dynamicsProperties.getCollisionCheckStrideLowSpeed();
 
         double sprocketRadius = device.getSprocketRadius() != null ?
                 device.getSprocketRadius().doubleValue() : 0.35;

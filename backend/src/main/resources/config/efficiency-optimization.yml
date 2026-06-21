@@ -1,0 +1,18 @@
+optimization:
+  response-surface:
+    design-points: 15
+    max-iterations: 50
+    convergence-tolerance: 1.0e-6
+    adaptive-residual-threshold: 0.05
+    boundary-weight-boost: 2.5
+    adaptive-refinement-directions: 12
+  scraper:
+    min-depth: 0.05
+    max-depth: 0.20
+    min-width: 0.10
+    max-width: 0.40
+    min-angle: 15.0
+    max-angle: 60.0
+  chain-speed:
+    min: 0.5
+    max: 3.0

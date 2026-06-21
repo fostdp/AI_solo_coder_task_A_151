@@ -1,9 +1,12 @@
 package com.waterwheel.chaintransmission.optimization;
 
+import com.waterwheel.chaintransmission.efficiency_optimizer.config.ChainSpeedOptimizationProperties;
+import com.waterwheel.chaintransmission.efficiency_optimizer.config.ResponseSurfaceProperties;
+import com.waterwheel.chaintransmission.efficiency_optimizer.config.ScraperOptimizationProperties;
 import com.waterwheel.chaintransmission.dto.OptimizationResultDTO;
 import com.waterwheel.chaintransmission.entity.WaterwheelDevice;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -12,40 +15,33 @@ import java.util.*;
 @Component
 public class WaterEfficiencyOptimizer {
 
-    @Value("${optimization.response-surface.design-points:15}")
-    private int designPoints;
+    @Autowired
+    private ResponseSurfaceProperties responseSurfaceProperties;
 
-    @Value("${optimization.response-surface.max-iterations:50}")
-    private int maxIterations;
+    @Autowired
+    private ScraperOptimizationProperties scraperProps;
 
-    @Value("${optimization.response-surface.convergence-tolerance:1.0e-6}")
-    private double convergenceTolerance;
+    @Autowired
+    private ChainSpeedOptimizationProperties chainSpeedProps;
 
-    @Value("${optimization.scraper.min-depth:0.05}")
-    private double minScraperDepth;
-    @Value("${optimization.scraper.max-depth:0.20}")
-    private double maxScraperDepth;
-
-    @Value("${optimization.scraper.min-width:0.10}")
-    private double minScraperWidth;
-    @Value("${optimization.scraper.max-width:0.40}")
-    private double maxScraperWidth;
-
-    @Value("${optimization.scraper.min-angle:15.0}")
-    private double minScraperAngle;
-    @Value("${optimization.scraper.max-angle:60.0}")
-    private double maxScraperAngle;
-
-    @Value("${optimization.chain-speed.min:0.5}")
-    private double minChainSpeed;
-    @Value("${optimization.chain-speed.max:3.0}")
-    private double maxChainSpeed;
-
+    private static final int NUM_DESIGN_VARS = 4;
     private static final double GRAVITY = 9.81;
     private static final double WATER_DENSITY = 1000.0;
 
     public OptimizationResultDTO optimize(WaterwheelDevice device, double currentWaterFlow) {
         log.info("开始提水效率优化, 设备: {}, 当前提水量: {} L/h", device.getDeviceName(), currentWaterFlow);
+
+        int designPoints = responseSurfaceProperties.getDesignPoints();
+        int maxIterations = responseSurfaceProperties.getMaxIterations();
+        double convergenceTolerance = responseSurfaceProperties.getConvergenceTolerance();
+        double minScraperDepth = scraperProps.getMinDepth();
+        double maxScraperDepth = scraperProps.getMaxDepth();
+        double minScraperWidth = scraperProps.getMinWidth();
+        double maxScraperWidth = scraperProps.getMaxWidth();
+        double minScraperAngle = scraperProps.getMinAngle();
+        double maxScraperAngle = scraperProps.getMaxAngle();
+        double minChainSpeed = chainSpeedProps.getMin();
+        double maxChainSpeed = chainSpeedProps.getMax();
 
         int scraperCount = device.getScraperCount() != null ? device.getScraperCount() : 24;
         double sprocketRadius = device.getSprocketRadius() != null ?
@@ -113,6 +109,15 @@ public class WaterEfficiencyOptimizer {
     private List<Map<String, Object>> generateBoundaryAwareCCD() {
         List<Map<String, Object>> points = new ArrayList<>();
 
+        double minScraperDepth = scraperProps.getMinDepth();
+        double maxScraperDepth = scraperProps.getMaxDepth();
+        double minScraperWidth = scraperProps.getMinWidth();
+        double maxScraperWidth = scraperProps.getMaxWidth();
+        double minScraperAngle = scraperProps.getMinAngle();
+        double maxScraperAngle = scraperProps.getMaxAngle();
+        double minChainSpeed = chainSpeedProps.getMin();
+        double maxChainSpeed = chainSpeedProps.getMax();
+
         double midDepth = (minScraperDepth + maxScraperDepth) / 2;
         double midWidth = (minScraperWidth + maxScraperWidth) / 2;
         double midAngle = (minScraperAngle + maxScraperAngle) / 2;
@@ -164,6 +169,15 @@ public class WaterEfficiencyOptimizer {
     }
 
     private void addBoundaryAugmentedPoints(List<Map<String, Object>> points) {
+        double minScraperDepth = scraperProps.getMinDepth();
+        double maxScraperDepth = scraperProps.getMaxDepth();
+        double minScraperWidth = scraperProps.getMinWidth();
+        double maxScraperWidth = scraperProps.getMaxWidth();
+        double minScraperAngle = scraperProps.getMinAngle();
+        double maxScraperAngle = scraperProps.getMaxAngle();
+        double minChainSpeed = chainSpeedProps.getMin();
+        double maxChainSpeed = chainSpeedProps.getMax();
+
         double[][] boundaryAnchors = {
                 {minScraperDepth, (minScraperWidth + maxScraperWidth) / 2, (minScraperAngle + maxScraperAngle) / 2, (minChainSpeed + maxChainSpeed) / 2},
                 {maxScraperDepth, (minScraperWidth + maxScraperWidth) / 2, (minScraperAngle + maxScraperAngle) / 2, (minChainSpeed + maxChainSpeed) / 2},
@@ -190,6 +204,15 @@ public class WaterEfficiencyOptimizer {
     }
 
     private void computePointWeight(Map<String, Object> point) {
+        double minScraperDepth = scraperProps.getMinDepth();
+        double maxScraperDepth = scraperProps.getMaxDepth();
+        double minScraperWidth = scraperProps.getMinWidth();
+        double maxScraperWidth = scraperProps.getMaxWidth();
+        double minScraperAngle = scraperProps.getMinAngle();
+        double maxScraperAngle = scraperProps.getMaxAngle();
+        double minChainSpeed = chainSpeedProps.getMin();
+        double maxChainSpeed = chainSpeedProps.getMax();
+
         double d = (double) point.get("depth");
         double w = (double) point.get("width");
         double a = (double) point.get("angle");
@@ -213,13 +236,24 @@ public class WaterEfficiencyOptimizer {
         );
 
         double boundaryProximity = Math.max(0, normDist - 0.9);
-        double weight = 1.0 + boundaryProximity * 2.5;
+        double weight = 1.0 + boundaryProximity * responseSurfaceProperties.getBoundaryWeightBoost();
         point.put("weight", weight);
     }
 
     private List<Map<String, Object>> adaptiveBoundaryRefinement(
             double[] coefficients, List<Map<String, Object>> existingPoints,
             int scraperCount, double sprocketRadius) {
+
+        double minScraperDepth = scraperProps.getMinDepth();
+        double maxScraperDepth = scraperProps.getMaxDepth();
+        double minScraperWidth = scraperProps.getMinWidth();
+        double maxScraperWidth = scraperProps.getMaxWidth();
+        double minScraperAngle = scraperProps.getMinAngle();
+        double maxScraperAngle = scraperProps.getMaxAngle();
+        double minChainSpeed = chainSpeedProps.getMin();
+        double maxChainSpeed = chainSpeedProps.getMax();
+        double residualThreshold = responseSurfaceProperties.getAdaptiveResidualThreshold();
+        int refinementDirections = responseSurfaceProperties.getAdaptiveRefinementDirections();
 
         List<Map<String, Object>> newPoints = new ArrayList<>();
         double maxResidual = 0;
@@ -256,7 +290,7 @@ public class WaterEfficiencyOptimizer {
             }
         }
 
-        if (maxResidual > 0.05 && worstPoint != null) {
+        if (maxResidual > residualThreshold && worstPoint != null) {
             log.info("检测到边界高残差点 (残差={}%), 执行自适应补采样...", round(maxResidual * 100, 2));
             double d = (double) worstPoint.get("depth");
             double w = (double) worstPoint.get("width");
@@ -270,11 +304,7 @@ public class WaterEfficiencyOptimizer {
                     (maxChainSpeed - minChainSpeed) / 15
             };
 
-            double[][] perturbDirs = {
-                    {1, 0, 0, 0}, {-1, 0, 0, 0}, {0, 1, 0, 0}, {0, -1, 0, 0},
-                    {0, 0, 1, 0}, {0, 0, -1, 0}, {0, 0, 0, 1}, {0, 0, 0, -1},
-                    {1, 1, 0, 0}, {-1, -1, 0, 0}, {0, 0, 1, 1}, {0, 0, -1, -1}
-            };
+            double[][] perturbDirs = buildPerturbationDirections(refinementDirections);
 
             for (double[] dir : perturbDirs) {
                 double nd = clamp(d + dir[0] * stepSize[0], minScraperDepth, maxScraperDepth);
@@ -552,5 +582,25 @@ public class WaterEfficiencyOptimizer {
     private double round(double value, int decimalPlaces) {
         double factor = Math.pow(10, decimalPlaces);
         return Math.round(value * factor) / factor;
+    }
+
+    private double[][] buildPerturbationDirections(int count) {
+        List<double[]> directions = new ArrayList<>();
+        double[][] baseAxis = {
+                {1, 0, 0, 0}, {-1, 0, 0, 0},
+                {0, 1, 0, 0}, {0, -1, 0, 0},
+                {0, 0, 1, 0}, {0, 0, -1, 0},
+                {0, 0, 0, 1}, {0, 0, 0, -1}
+        };
+        double[][] pairedAxis = {
+                {1, 1, 0, 0}, {-1, -1, 0, 0},
+                {0, 0, 1, 1}, {0, 0, -1, -1}
+        };
+        for (double[] d : baseAxis) directions.add(d);
+        for (double[] d : pairedAxis) {
+            if (directions.size() >= count) break;
+            directions.add(d);
+        }
+        return directions.toArray(new double[0][]);
     }
 }
