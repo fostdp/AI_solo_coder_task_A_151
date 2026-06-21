@@ -51,9 +51,11 @@ public class WaterEfficiencyOptimizer {
         double sprocketRadius = device.getSprocketRadius() != null ?
                 device.getSprocketRadius().doubleValue() : 0.35;
 
-        List<Map<String, Object>> designPointsData = generateCentralCompositeDesign();
-
         List<Map<String, Object>> evaluatedPoints = new ArrayList<>();
+
+        List<Map<String, Object>> designPointsData = generateBoundaryAwareCCD();
+        addBoundaryAugmentedPoints(designPointsData);
+
         for (Map<String, Object> point : designPointsData) {
             double depth = (double) point.get("depth");
             double width = (double) point.get("width");
@@ -62,10 +64,18 @@ public class WaterEfficiencyOptimizer {
 
             double waterFlow = calculateWaterFlow(depth, width, angle, speed, scraperCount, sprocketRadius);
             point.put("waterFlow", waterFlow);
+            computePointWeight(point);
             evaluatedPoints.add(point);
         }
 
-        double[] coefficients = fitResponseSurface(evaluatedPoints);
+        double[] coefficients = fitWeightedResponseSurface(evaluatedPoints);
+
+        List<Map<String, Object>> boundaryRefinement = adaptiveBoundaryRefinement(
+                coefficients, evaluatedPoints, scraperCount, sprocketRadius);
+        if (!boundaryRefinement.isEmpty()) {
+            evaluatedPoints.addAll(boundaryRefinement);
+            coefficients = fitWeightedResponseSurface(evaluatedPoints);
+        }
 
         Map<String, Object> optimum = findOptimum(coefficients, scraperCount, sprocketRadius);
 
@@ -82,7 +92,7 @@ public class WaterEfficiencyOptimizer {
 
         OptimizationResultDTO result = new OptimizationResultDTO();
         result.setDeviceId(device.getDeviceId());
-        result.setMethod("ResponseSurfaceMethod_CentralCompositeDesign");
+        result.setMethod("ResponseSurfaceMethod_AdaptiveBoundaryWeighted");
         result.setOptimalScraperDepth(java.math.BigDecimal.valueOf(round(optimalDepth, 4)));
         result.setOptimalScraperWidth(java.math.BigDecimal.valueOf(round(optimalWidth, 4)));
         result.setOptimalScraperAngle(java.math.BigDecimal.valueOf(round(optimalAngle, 2)));
@@ -100,7 +110,7 @@ public class WaterEfficiencyOptimizer {
         return result;
     }
 
-    private List<Map<String, Object>> generateCentralCompositeDesign() {
+    private List<Map<String, Object>> generateBoundaryAwareCCD() {
         List<Map<String, Object>> points = new ArrayList<>();
 
         double midDepth = (minScraperDepth + maxScraperDepth) / 2;
@@ -108,44 +118,187 @@ public class WaterEfficiencyOptimizer {
         double midAngle = (minScraperAngle + maxScraperAngle) / 2;
         double midSpeed = (minChainSpeed + maxChainSpeed) / 2;
 
+        double rangeDepth = maxScraperDepth - minScraperDepth;
+        double rangeWidth = maxScraperWidth - minScraperWidth;
+        double rangeAngle = maxScraperAngle - minScraperAngle;
+        double rangeSpeed = maxChainSpeed - minChainSpeed;
+
         double alpha = Math.pow(2, 4.0 / 4);
+        double clampedAlpha = Math.min(alpha, 1.0);
 
-        points.add(createPoint(minScraperDepth, minScraperWidth, minScraperAngle, minChainSpeed));
-        points.add(createPoint(maxScraperDepth, minScraperWidth, minScraperAngle, minChainSpeed));
-        points.add(createPoint(minScraperDepth, maxScraperWidth, minScraperAngle, minChainSpeed));
-        points.add(createPoint(maxScraperDepth, maxScraperWidth, minScraperAngle, minChainSpeed));
-        points.add(createPoint(minScraperDepth, minScraperWidth, maxScraperAngle, minChainSpeed));
-        points.add(createPoint(maxScraperDepth, minScraperWidth, maxScraperAngle, minChainSpeed));
-        points.add(createPoint(minScraperDepth, maxScraperWidth, maxScraperAngle, minChainSpeed));
-        points.add(createPoint(maxScraperDepth, maxScraperWidth, maxScraperAngle, minChainSpeed));
-        points.add(createPoint(minScraperDepth, minScraperWidth, minScraperAngle, maxChainSpeed));
-        points.add(createPoint(maxScraperDepth, minScraperWidth, minScraperAngle, maxChainSpeed));
-        points.add(createPoint(minScraperDepth, maxScraperWidth, minScraperAngle, maxChainSpeed));
-        points.add(createPoint(maxScraperDepth, maxScraperWidth, minScraperAngle, maxChainSpeed));
-        points.add(createPoint(minScraperDepth, minScraperWidth, maxScraperAngle, maxChainSpeed));
-        points.add(createPoint(maxScraperDepth, minScraperWidth, maxScraperAngle, maxChainSpeed));
-        points.add(createPoint(minScraperDepth, maxScraperWidth, maxScraperAngle, maxChainSpeed));
-        points.add(createPoint(maxScraperDepth, maxScraperWidth, maxScraperAngle, maxChainSpeed));
+        int[][] factorialSigns = {
+                {-1, -1, -1, -1}, {1, -1, -1, -1}, {-1, 1, -1, -1}, {1, 1, -1, -1},
+                {-1, -1, 1, -1}, {1, -1, 1, -1}, {-1, 1, 1, -1}, {1, 1, 1, -1},
+                {-1, -1, -1, 1}, {1, -1, -1, 1}, {-1, 1, -1, 1}, {1, 1, -1, 1},
+                {-1, -1, 1, 1}, {1, -1, 1, 1}, {-1, 1, 1, 1}, {1, 1, 1, 1}
+        };
+        for (int[] s : factorialSigns) {
+            points.add(createPoint(
+                    midDepth + s[0] * rangeDepth * 0.5,
+                    midWidth + s[1] * rangeWidth * 0.5,
+                    midAngle + s[2] * rangeAngle * 0.5,
+                    midSpeed + s[3] * rangeSpeed * 0.5
+            ));
+        }
 
-        double starDepth = midDepth + alpha * (maxScraperDepth - midDepth);
-        double starWidth = midWidth + alpha * (maxScraperWidth - midWidth);
-        double starAngle = midAngle + alpha * (maxScraperAngle - midAngle);
-        double starSpeed = midSpeed + alpha * (maxChainSpeed - midSpeed);
-
-        points.add(createPoint(starDepth, midWidth, midAngle, midSpeed));
-        points.add(createPoint(midDepth - alpha * (midDepth - minScraperDepth), midWidth, midAngle, midSpeed));
-        points.add(createPoint(midDepth, starWidth, midAngle, midSpeed));
-        points.add(createPoint(midDepth, midWidth - alpha * (midWidth - minScraperWidth), midAngle, midSpeed));
-        points.add(createPoint(midDepth, midWidth, starAngle, midSpeed));
-        points.add(createPoint(midDepth, midWidth, midAngle - alpha * (midAngle - minScraperAngle), midSpeed));
-        points.add(createPoint(midDepth, midWidth, midAngle, starSpeed));
-        points.add(createPoint(midDepth, midWidth, midAngle, midSpeed - alpha * (midSpeed - minChainSpeed)));
+        double[][] axialOffsets = {
+                {1, 0, 0, 0}, {-1, 0, 0, 0},
+                {0, 1, 0, 0}, {0, -1, 0, 0},
+                {0, 0, 1, 0}, {0, 0, -1, 0},
+                {0, 0, 0, 1}, {0, 0, 0, -1}
+        };
+        for (double[] o : axialOffsets) {
+            points.add(createPoint(
+                    midDepth + o[0] * rangeDepth * 0.5 * clampedAlpha,
+                    midWidth + o[1] * rangeWidth * 0.5 * clampedAlpha,
+                    midAngle + o[2] * rangeAngle * 0.5 * clampedAlpha,
+                    midSpeed + o[3] * rangeSpeed * 0.5 * clampedAlpha
+            ));
+        }
 
         for (int i = 0; i < 5; i++) {
             points.add(createPoint(midDepth, midWidth, midAngle, midSpeed));
         }
 
         return points;
+    }
+
+    private void addBoundaryAugmentedPoints(List<Map<String, Object>> points) {
+        double[][] boundaryAnchors = {
+                {minScraperDepth, (minScraperWidth + maxScraperWidth) / 2, (minScraperAngle + maxScraperAngle) / 2, (minChainSpeed + maxChainSpeed) / 2},
+                {maxScraperDepth, (minScraperWidth + maxScraperWidth) / 2, (minScraperAngle + maxScraperAngle) / 2, (minChainSpeed + maxChainSpeed) / 2},
+                {(minScraperDepth + maxScraperDepth) / 2, minScraperWidth, (minScraperAngle + maxScraperAngle) / 2, (minChainSpeed + maxChainSpeed) / 2},
+                {(minScraperDepth + maxScraperDepth) / 2, maxScraperWidth, (minScraperAngle + maxScraperAngle) / 2, (minChainSpeed + maxChainSpeed) / 2},
+                {(minScraperDepth + maxScraperDepth) / 2, (minScraperWidth + maxScraperWidth) / 2, minScraperAngle, (minChainSpeed + maxChainSpeed) / 2},
+                {(minScraperDepth + maxScraperDepth) / 2, (minScraperWidth + maxScraperWidth) / 2, maxScraperAngle, (minChainSpeed + maxChainSpeed) / 2},
+                {(minScraperDepth + maxScraperDepth) / 2, (minScraperWidth + maxScraperWidth) / 2, (minScraperAngle + maxScraperAngle) / 2, minChainSpeed},
+                {(minScraperDepth + maxScraperDepth) / 2, (minScraperWidth + maxScraperWidth) / 2, (minScraperAngle + maxScraperAngle) / 2, maxChainSpeed}
+        };
+        for (double[] a : boundaryAnchors) {
+            points.add(createPoint(a[0], a[1], a[2], a[3]));
+        }
+
+        double[][] cornerFaces = {
+                {minScraperDepth, minScraperWidth, minScraperAngle, (minChainSpeed + maxChainSpeed) / 2},
+                {maxScraperDepth, maxScraperWidth, maxScraperAngle, (minChainSpeed + maxChainSpeed) / 2},
+                {minScraperDepth, maxScraperWidth, (minScraperAngle + maxScraperAngle) / 2, minChainSpeed},
+                {maxScraperDepth, minScraperWidth, (minScraperAngle + maxScraperAngle) / 2, maxChainSpeed}
+        };
+        for (double[] c : cornerFaces) {
+            points.add(createPoint(c[0], c[1], c[2], c[3]));
+        }
+    }
+
+    private void computePointWeight(Map<String, Object> point) {
+        double d = (double) point.get("depth");
+        double w = (double) point.get("width");
+        double a = (double) point.get("angle");
+        double s = (double) point.get("speed");
+
+        double midDepth = (minScraperDepth + maxScraperDepth) / 2;
+        double midWidth = (minScraperWidth + maxScraperWidth) / 2;
+        double midAngle = (minScraperAngle + maxScraperAngle) / 2;
+        double midSpeed = (minChainSpeed + maxChainSpeed) / 2;
+
+        double rangeDepth = maxScraperDepth - minScraperDepth;
+        double rangeWidth = maxScraperWidth - minScraperWidth;
+        double rangeAngle = maxScraperAngle - minScraperAngle;
+        double rangeSpeed = maxChainSpeed - minChainSpeed;
+
+        double normDist = Math.sqrt(
+                Math.pow((d - midDepth) / (rangeDepth / 2), 2) +
+                Math.pow((w - midWidth) / (rangeWidth / 2), 2) +
+                Math.pow((a - midAngle) / (rangeAngle / 2), 2) +
+                Math.pow((s - midSpeed) / (rangeSpeed / 2), 2)
+        );
+
+        double boundaryProximity = Math.max(0, normDist - 0.9);
+        double weight = 1.0 + boundaryProximity * 2.5;
+        point.put("weight", weight);
+    }
+
+    private List<Map<String, Object>> adaptiveBoundaryRefinement(
+            double[] coefficients, List<Map<String, Object>> existingPoints,
+            int scraperCount, double sprocketRadius) {
+
+        List<Map<String, Object>> newPoints = new ArrayList<>();
+        double maxResidual = 0;
+        Map<String, Object> worstPoint = null;
+        double predictedWorst = 0;
+        double actualWorst = 0;
+
+        for (Map<String, Object> p : existingPoints) {
+            double d = (double) p.get("depth");
+            double w = (double) p.get("width");
+            double a = (double) p.get("angle");
+            double s = (double) p.get("speed");
+            double actual = (double) p.get("waterFlow");
+            double predicted = evaluateResponseSurface(coefficients, d, w, a, s);
+            double residual = Math.abs(actual - predicted) / (actual + 1e-6);
+
+            double midDepth = (minScraperDepth + maxScraperDepth) / 2;
+            double midWidth = (minScraperWidth + maxScraperWidth) / 2;
+            double midAngle = (minScraperAngle + maxScraperAngle) / 2;
+            double midSpeed = (minChainSpeed + maxChainSpeed) / 2;
+            double boundaryFactor =
+                    Math.abs(d - midDepth) / (maxScraperDepth - minScraperDepth) +
+                    Math.abs(w - midWidth) / (maxScraperWidth - minScraperWidth) +
+                    Math.abs(a - midAngle) / (maxScraperAngle - minScraperAngle) +
+                    Math.abs(s - midSpeed) / (maxChainSpeed - minChainSpeed);
+            boundaryFactor /= 2.0;
+
+            double weightedResidual = residual * (0.5 + boundaryFactor);
+            if (weightedResidual > maxResidual) {
+                maxResidual = weightedResidual;
+                worstPoint = p;
+                predictedWorst = predicted;
+                actualWorst = actual;
+            }
+        }
+
+        if (maxResidual > 0.05 && worstPoint != null) {
+            log.info("检测到边界高残差点 (残差={}%), 执行自适应补采样...", round(maxResidual * 100, 2));
+            double d = (double) worstPoint.get("depth");
+            double w = (double) worstPoint.get("width");
+            double a = (double) worstPoint.get("angle");
+            double s = (double) worstPoint.get("speed");
+
+            double[] stepSize = {
+                    (maxScraperDepth - minScraperDepth) / 15,
+                    (maxScraperWidth - minScraperWidth) / 15,
+                    (maxScraperAngle - minScraperAngle) / 15,
+                    (maxChainSpeed - minChainSpeed) / 15
+            };
+
+            double[][] perturbDirs = {
+                    {1, 0, 0, 0}, {-1, 0, 0, 0}, {0, 1, 0, 0}, {0, -1, 0, 0},
+                    {0, 0, 1, 0}, {0, 0, -1, 0}, {0, 0, 0, 1}, {0, 0, 0, -1},
+                    {1, 1, 0, 0}, {-1, -1, 0, 0}, {0, 0, 1, 1}, {0, 0, -1, -1}
+            };
+
+            for (double[] dir : perturbDirs) {
+                double nd = clamp(d + dir[0] * stepSize[0], minScraperDepth, maxScraperDepth);
+                double nw = clamp(w + dir[1] * stepSize[1], minScraperWidth, maxScraperWidth);
+                double na = clamp(a + dir[2] * stepSize[2], minScraperAngle, maxScraperAngle);
+                double ns = clamp(s + dir[3] * stepSize[3], minChainSpeed, maxChainSpeed);
+
+                boolean duplicate = existingPoints.stream().anyMatch(p2 ->
+                        Math.abs((double) p2.get("depth") - nd) < 1e-5 &&
+                        Math.abs((double) p2.get("width") - nw) < 1e-5 &&
+                        Math.abs((double) p2.get("angle") - na) < 1e-5 &&
+                        Math.abs((double) p2.get("speed") - ns) < 1e-5);
+                if (duplicate) continue;
+
+                Map<String, Object> np = createPoint(nd, nw, na, ns);
+                double flow = calculateWaterFlow(nd, nw, na, ns, scraperCount, sprocketRadius);
+                np.put("waterFlow", flow);
+                np.put("weight", 2.0);
+                np.put("adaptiveRefinement", true);
+                newPoints.add(np);
+            }
+        }
+
+        return newPoints;
     }
 
     private Map<String, Object> createPoint(double depth, double width, double angle, double speed) {
@@ -195,12 +348,13 @@ public class WaterEfficiencyOptimizer {
         return 0.6 * anglePenalty * (0.7 + 0.3 * speedPenalty) + 0.2;
     }
 
-    private double[] fitResponseSurface(List<Map<String, Object>> points) {
+    private double[] fitWeightedResponseSurface(List<Map<String, Object>> points) {
         int n = points.size();
         int numCoeffs = 15;
 
         double[][] X = new double[n][numCoeffs];
         double[] Y = new double[n];
+        double[] W = new double[n];
 
         for (int i = 0; i < n; i++) {
             Map<String, Object> p = points.get(i);
@@ -208,27 +362,33 @@ public class WaterEfficiencyOptimizer {
             double w = (double) p.get("width");
             double a = (double) p.get("angle");
             double s = (double) p.get("speed");
+            double weight = p.containsKey("weight") ? ((Number) p.get("weight")).doubleValue() : 1.0;
+            double sqrtW = Math.sqrt(weight);
 
-            X[i][0] = 1;
-            X[i][1] = d;
-            X[i][2] = w;
-            X[i][3] = a;
-            X[i][4] = s;
-            X[i][5] = d * d;
-            X[i][6] = w * w;
-            X[i][7] = a * a;
-            X[i][8] = s * s;
-            X[i][9] = d * w;
-            X[i][10] = d * a;
-            X[i][11] = d * s;
-            X[i][12] = w * a;
-            X[i][13] = w * s;
-            X[i][14] = a * s;
+            X[i][0] = sqrtW;
+            X[i][1] = d * sqrtW;
+            X[i][2] = w * sqrtW;
+            X[i][3] = a * sqrtW;
+            X[i][4] = s * sqrtW;
+            X[i][5] = d * d * sqrtW;
+            X[i][6] = w * w * sqrtW;
+            X[i][7] = a * a * sqrtW;
+            X[i][8] = s * s * sqrtW;
+            X[i][9] = d * w * sqrtW;
+            X[i][10] = d * a * sqrtW;
+            X[i][11] = d * s * sqrtW;
+            X[i][12] = w * a * sqrtW;
+            X[i][13] = w * s * sqrtW;
+            X[i][14] = a * s * sqrtW;
 
-            Y[i] = (double) p.get("waterFlow");
+            Y[i] = (double) p.get("waterFlow") * sqrtW;
         }
 
         return solveLeastSquares(X, Y);
+    }
+
+    private double[] fitResponseSurface(List<Map<String, Object>> points) {
+        return fitWeightedResponseSurface(points);
     }
 
     private double[] solveLeastSquares(double[][] X, double[] Y) {

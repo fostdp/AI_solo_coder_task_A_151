@@ -25,6 +25,10 @@ public class ChainDynamicsSimulator {
     private static final double GRAVITY = 9.81;
     private static final double COLLISION_RESTITUTION = 0.3;
     private static final double COLLISION_THRESHOLD = 1e-6;
+    private static final double GRID_CELL_MULTIPLIER = 2.5;
+    private static final int MAX_ADAPTIVE_SUBSTEPS = 4;
+    private static final double HIGH_SPEED_THRESHOLD = 3.0;
+    private static final int COLLISION_CHECK_STRIDE_LOW_SPEED = 2;
 
     public ChainDynamicsResultDTO simulate(WaterwheelDevice device,
                                             ChainLinkParams params,
@@ -68,35 +72,71 @@ public class ChainDynamicsSimulator {
         List<Double> allTensions = new ArrayList<>();
         List<Double> collisionForces = new ArrayList<>();
         double[] maxTensionPerLink = new double[numLinks];
+        double[] maxCollisionPerLink = new double[numLinks];
 
         int iterations = Math.min((int) (simulationDuration / timeStep), maxIterations);
         boolean resonanceRisk = false;
         double[] velocityHistory = new double[100];
         int velocityIndex = 0;
 
+        double gridCellSize = GRID_CELL_MULTIPLIER * linkLength;
+        Map<String, List<Integer>> spatialGrid = new HashMap<>();
+        double[] linkAvgCollision = new double[numLinks];
+        int collisionCheckCounter = 0;
+
         for (int iter = 0; iter < iterations; iter++) {
             double t = iter * timeStep;
 
-            drivingSprocket.rotate(timeStep);
-            drivenSprocket.setAngularVelocity(drivingSprocket.getAngularVelocity() * 0.98);
-            drivenSprocket.rotate(timeStep);
+            double avgSpeed = 0;
+            for (ChainLink link : links) avgSpeed += link.getSpeed();
+            avgSpeed = avgSpeed / numLinks + 1e-10;
 
-            for (int i = 0; i < numLinks; i++) {
-                ChainLink link = links.get(i);
-                calculateLinkDynamics(link, links, i, drivingSprocket, drivenSprocket,
-                        stiffness, damping, frictionCoeff, numLinks);
+            int subSteps = 1;
+            if (avgSpeed > HIGH_SPEED_THRESHOLD) {
+                double speedRatio = avgSpeed / HIGH_SPEED_THRESHOLD;
+                subSteps = Math.min(MAX_ADAPTIVE_SUBSTEPS, (int) Math.ceil(speedRatio));
+            }
+            double subDt = timeStep / subSteps;
+
+            boolean doFullCollisionThisStep;
+            if (avgSpeed < HIGH_SPEED_THRESHOLD * 0.6) {
+                collisionCheckCounter = (collisionCheckCounter + 1) % COLLISION_CHECK_STRIDE_LOW_SPEED;
+                doFullCollisionThisStep = (collisionCheckCounter == 0);
+            } else {
+                doFullCollisionThisStep = true;
             }
 
-            for (ChainLink link : links) {
-                link.updateKinematics(timeStep);
+            for (int sub = 0; sub < subSteps; sub++) {
+                double subProgress = (double) sub / subSteps;
+                drivingSprocket.rotate(subDt);
+                drivenSprocket.setAngularVelocity(drivingSprocket.getAngularVelocity() * 0.98);
+                drivenSprocket.rotate(subDt);
+
+                for (int i = 0; i < numLinks; i++) {
+                    ChainLink link = links.get(i);
+                    calculateLinkDynamics(link, links, i, drivingSprocket, drivenSprocket,
+                            stiffness, damping, frictionCoeff, numLinks);
+                }
+
+                if (doFullCollisionThisStep) {
+                    resolveNonAdjacentCollisionsSpatialGrid(links, linkLength, gridCellSize,
+                            spatialGrid, stiffness, damping, maxCollisionPerLink);
+                }
+
+                for (ChainLink link : links) {
+                    link.updateKinematics(subDt);
+                }
             }
 
             for (int i = 0; i < numLinks; i++) {
                 ChainLink current = links.get(i);
                 ChainLink next = links.get((i + 1) % numLinks);
                 double collisionForce = calculateCollisionForce(current, next, stiffness);
-                current.setCollisionForce(collisionForce);
-                collisionForces.add(collisionForce);
+                current.setCollisionForce(Math.max(collisionForce, maxCollisionPerLink[i]));
+                if (iter % Math.max(1, iterations / 200) == 0) {
+                    collisionForces.add(current.getCollisionForce());
+                }
+                maxCollisionPerLink[i] *= 0.9;
             }
 
             for (int i = 0; i < numLinks; i++) {
@@ -104,17 +144,14 @@ public class ChainDynamicsSimulator {
                 double tension = calculateLinkTension(link, links, i, stiffness, numLinks);
                 link.setTension(tension);
                 tensionHistory[i] = tension;
-                allTensions.add(tension);
+                if (iter % Math.max(1, iterations / 500) == 0) {
+                    allTensions.add(tension);
+                }
                 if (tension > maxTensionPerLink[i]) {
                     maxTensionPerLink[i] = tension;
                 }
             }
 
-            double avgSpeed = 0;
-            for (ChainLink link : links) {
-                avgSpeed += link.getSpeed();
-            }
-            avgSpeed /= numLinks;
             velocityHistory[velocityIndex] = avgSpeed;
             velocityIndex = (velocityIndex + 1) % velocityHistory.length;
 
@@ -409,6 +446,96 @@ public class ChainDynamicsSimulator {
         double coefficientOfVariation = stdDev / (Math.abs(mean) + 1e-10);
 
         return coefficientOfVariation > 0.5;
+    }
+
+    private void resolveNonAdjacentCollisionsSpatialGrid(List<ChainLink> links, double linkLength,
+                                                          double gridCellSize,
+                                                          Map<String, List<Integer>> spatialGrid,
+                                                          double stiffness, double damping,
+                                                          double[] maxCollisionPerLink) {
+        spatialGrid.clear();
+        for (int i = 0; i < links.size(); i++) {
+            ChainLink l = links.get(i);
+            int gx = (int) Math.floor(l.getPositionX() / gridCellSize);
+            int gy = (int) Math.floor(l.getPositionY() / gridCellSize);
+            int gz = (int) Math.floor(l.getPositionZ() / gridCellSize);
+            String key = gx + "," + gy + "," + gz;
+            spatialGrid.computeIfAbsent(key, k -> new ArrayList<>(8)).add(i);
+        }
+
+        double minContactDist = linkLength * 0.9;
+        double minContactSq = minContactDist * minContactDist;
+
+        for (int i = 0; i < links.size(); i++) {
+            ChainLink a = links.get(i);
+            int gx = (int) Math.floor(a.getPositionX() / gridCellSize);
+            int gy = (int) Math.floor(a.getPositionY() / gridCellSize);
+            int gz = (int) Math.floor(a.getPositionZ() / gridCellSize);
+
+            for (int ox = -1; ox <= 1; ox++) {
+                for (int oy = -1; oy <= 1; oy++) {
+                    for (int oz = -1; oz <= 1; oz++) {
+                        String key = (gx + ox) + "," + (gy + oy) + "," + (gz + oz);
+                        List<Integer> bucket = spatialGrid.get(key);
+                        if (bucket == null) continue;
+
+                        for (int j : bucket) {
+                            if (j <= i) continue;
+                            if (Math.abs(j - i) <= 1 || (i == 0 && j == links.size() - 1)) continue;
+                            ChainLink b = links.get(j);
+
+                            double dx = a.getPositionX() - b.getPositionX();
+                            double dy = a.getPositionY() - b.getPositionY();
+                            double dz = a.getPositionZ() - b.getPositionZ();
+                            double distSq = dx * dx + dy * dy + dz * dz;
+
+                            if (distSq < minContactSq && distSq > 1e-14) {
+                                double dist = Math.sqrt(distSq);
+                                double penetration = minContactDist - dist;
+                                double nx = dx / dist;
+                                double ny = dy / dist;
+                                double nz = dz / dist;
+
+                                double relVx = a.getVelocityX() - b.getVelocityX();
+                                double relVy = a.getVelocityY() - b.getVelocityY();
+                                double relVz = a.getVelocityZ() - b.getVelocityZ();
+                                double relVn = relVx * nx + relVy * ny + relVz * nz;
+
+                                if (relVn < 0) {
+                                    double normalForce = stiffness * penetration - damping * relVn;
+                                    normalForce = Math.max(0, normalForce);
+
+                                    double totalMass = a.getMass() + b.getMass();
+                                    double massRatioA = b.getMass() / totalMass;
+                                    double massRatioB = a.getMass() / totalMass;
+
+                                    double impulse = normalForce * timeStep;
+                                    a.setVelocityX(a.getVelocityX() + impulse * nx * massRatioA / a.getMass());
+                                    a.setVelocityY(a.getVelocityY() + impulse * ny * massRatioA / a.getMass());
+                                    a.setVelocityZ(a.getVelocityZ() + impulse * nz * massRatioA / a.getMass());
+                                    b.setVelocityX(b.getVelocityX() - impulse * nx * massRatioB / b.getMass());
+                                    b.setVelocityY(b.getVelocityY() - impulse * ny * massRatioB / b.getMass());
+                                    b.setVelocityZ(b.getVelocityZ() - impulse * nz * massRatioB / b.getMass());
+
+                                    double overlapCorrection = penetration * 0.5;
+                                    a.setPositionX(a.getPositionX() + nx * overlapCorrection * massRatioA);
+                                    a.setPositionY(a.getPositionY() + ny * overlapCorrection * massRatioA);
+                                    a.setPositionZ(a.getPositionZ() + nz * overlapCorrection * massRatioA);
+                                    b.setPositionX(b.getPositionX() - nx * overlapCorrection * massRatioB);
+                                    b.setPositionY(b.getPositionY() - ny * overlapCorrection * massRatioB);
+                                    b.setPositionZ(b.getPositionZ() - nz * overlapCorrection * massRatioB);
+
+                                    if (normalForce > maxCollisionPerLink[i])
+                                        maxCollisionPerLink[i] = normalForce;
+                                    if (normalForce > maxCollisionPerLink[j])
+                                        maxCollisionPerLink[j] = normalForce;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private boolean tensionHasCriticalValue(double[] tensions, double criticalValue) {

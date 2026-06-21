@@ -1,10 +1,13 @@
 let scene, camera, renderer, controls;
-let chainLinks = [], waterParticles = [], scrapers = [];
+let waterParticles = [];
 let drivingSprocket, drivenSprocket;
 let animationSpeed = 1.0;
 let showChain = true, showWater = true, showGrid = true;
 let time = 0;
 let waterTrough;
+let chainLinkMesh, pinMesh, scraperMesh;
+let chainLinkDummy, scraperDummy;
+let _chainPathCache = [];
 
 const CONFIG = {
     chainLength: 15.5,
@@ -230,18 +233,87 @@ function createChain() {
         metalness: 0.9
     });
 
-    for (let i = 0; i < CONFIG.numLinks; i++) {
-        const linkGroup = new THREE.Group();
-        const link = new THREE.Mesh(linkGeo, linkMat);
-        link.castShadow = true;
-        linkGroup.add(link);
-        const pin = new THREE.Mesh(pinGeo, pinMat);
-        pin.rotation.x = Math.PI / 2;
-        linkGroup.add(pin);
-        chainLinks.push(linkGroup);
-        scene.add(linkGroup);
-    }
+    chainLinkMesh = new THREE.InstancedMesh(linkGeo, linkMat, CONFIG.numLinks);
+    chainLinkMesh.castShadow = true;
+    chainLinkMesh.receiveShadow = false;
+    chainLinkMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(chainLinkMesh);
+
+    pinMesh = new THREE.InstancedMesh(pinGeo, pinMat, CONFIG.numLinks);
+    pinMesh.castShadow = true;
+    pinMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(pinMesh);
+
+    chainLinkDummy = new THREE.Object3D();
     updateChainPositions(0);
+}
+
+function createScrapers() {
+    const scraperGroupGeo = new THREE.Group();
+
+    const plateGeo = new THREE.BoxGeometry(CONFIG.scraperWidth, CONFIG.scraperHeight, 0.02);
+    const sideGeo = new THREE.BoxGeometry(CONFIG.scraperWidth, 0.02, CONFIG.scraperDepth);
+
+    const scraperMat = new THREE.MeshStandardMaterial({
+        color: 0x8b6914,
+        roughness: 0.6,
+        metalness: 0.2,
+        side: THREE.DoubleSide
+    });
+
+    const merged = mergeScraperGeometries(plateGeo, sideGeo);
+
+    scraperMesh = new THREE.InstancedMesh(merged, scraperMat, CONFIG.scraperCount);
+    scraperMesh.castShadow = true;
+    scraperMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(scraperMesh);
+
+    scraperDummy = new THREE.Object3D();
+}
+
+function mergeScraperGeometries(plateGeo, sideGeo) {
+    const plateM = new THREE.Matrix4().makeTranslation(0, 0, 0);
+    const sideM = new THREE.Matrix4().makeTranslation(0, CONFIG.scraperHeight / 2, CONFIG.scraperDepth / 2);
+    plateGeo.applyMatrix4(new THREE.Matrix4());
+    const p = plateGeo.attributes.position.array.slice();
+    const s = sideGeo.attributes.position.array.slice();
+
+    const geo = new THREE.BufferGeometry();
+    const totalLen = p.length + s.length;
+    const positions = new Float32Array(totalLen);
+    positions.set(p, 0);
+
+    for (let i = 0; i < s.length; i += 3) {
+        const sx = s[i], sy = s[i + 1], sz = s[i + 2];
+        positions[p.length + i] = sx;
+        positions[p.length + i + 1] = sy + CONFIG.scraperHeight / 2;
+        positions[p.length + i + 2] = sz + CONFIG.scraperDepth / 2;
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.computeVertexNormals();
+
+    const indices = [];
+    const plateTriCount = plateGeo.index ? plateGeo.index.count / 3 : plateGeo.attributes.position.count / 3;
+    const sideTriCount = sideGeo.index ? sideGeo.index.count / 3 : sideGeo.attributes.position.count / 3;
+
+    const src = (g) => {
+        const tri = [];
+        const idx = g.index ? g.index.array : null;
+        const count = idx ? idx.length / 3 : g.attributes.position.count / 3;
+        for (let t = 0; t < count; t++) {
+            if (idx) tri.push(idx[t*3], idx[t*3+1], idx[t*3+2]);
+            else tri.push(t*3, t*3+1, t*3+2);
+        }
+        return tri;
+    };
+    const plateIdx = src(plateGeo);
+    const sideIdx = src(sideGeo);
+    const offset = plateGeo.attributes.position.count;
+    for (let i of plateIdx) indices.push(i);
+    for (let i of sideIdx) indices.push(i + offset);
+    geo.setIndex(indices);
+    return geo;
 }
 
 function getChainPathPosition(progress) {
@@ -301,60 +373,57 @@ function updateChainPositions(rotation) {
     for (let i = 0; i < CONFIG.numLinks; i++) {
         const progress = (i / CONFIG.numLinks + rotation) % 1.0;
         const pos = getChainPathPosition(progress);
-        chainLinks[i].position.set(pos.x, pos.y, pos.z);
-        chainLinks[i].rotation.y = pos.angle;
 
         const nextProgress = ((i + 1) / CONFIG.numLinks + rotation) % 1.0;
         const nextPos = getChainPathPosition(nextProgress);
         const dx = nextPos.x - pos.x;
         const dy = nextPos.y - pos.y;
         const linkAngle = Math.atan2(dy, dx);
-        chainLinks[i].rotation.y = linkAngle;
+
+        chainLinkDummy.position.set(pos.x, pos.y, pos.z);
+        chainLinkDummy.rotation.set(0, linkAngle, 0);
+        chainLinkDummy.updateMatrix();
+        chainLinkMesh.setMatrixAt(i, chainLinkDummy.matrix);
+
+        chainLinkDummy.rotation.x = Math.PI / 2;
+        chainLinkDummy.rotation.y = 0;
+        chainLinkDummy.updateMatrix();
+        pinMesh.setMatrixAt(i, chainLinkDummy.matrix);
     }
-}
-
-function createScrapers() {
-    const scraperMat = new THREE.MeshStandardMaterial({
-        color: 0x8b6914,
-        roughness: 0.6,
-        metalness: 0.2,
-        side: THREE.DoubleSide
-    });
-
-    for (let i = 0; i < CONFIG.scraperCount; i++) {
-        const scraperGroup = new THREE.Group();
-        const plateGeo = new THREE.BoxGeometry(CONFIG.scraperWidth, CONFIG.scraperHeight, 0.02);
-        const plate = new THREE.Mesh(plateGeo, scraperMat);
-        plate.castShadow = true;
-        scraperGroup.add(plate);
-
-        const sideGeo = new THREE.BoxGeometry(CONFIG.scraperWidth, 0.02, CONFIG.scraperDepth);
-        const side1 = new THREE.Mesh(sideGeo, scraperMat);
-        side1.position.y = CONFIG.scraperHeight / 2;
-        side1.position.z = CONFIG.scraperDepth / 2;
-        side1.castShadow = true;
-        scraperGroup.add(side1);
-
-        scrapers.push(scraperGroup);
-        scene.add(scraperGroup);
-    }
+    chainLinkMesh.instanceMatrix.needsUpdate = true;
+    pinMesh.instanceMatrix.needsUpdate = true;
 }
 
 function updateScrapers(rotation) {
     const spacing = CONFIG.numLinks / CONFIG.scraperCount;
     for (let i = 0; i < CONFIG.scraperCount; i++) {
         const linkIndex = Math.floor(i * spacing) % CONFIG.numLinks;
-        if (chainLinks[linkIndex]) {
-            const linkPos = chainLinks[linkIndex].position;
-            scrapers[i].position.set(linkPos.x, linkPos.y - 0.02, 0);
-            scrapers[i].rotation.y = chainLinks[linkIndex].rotation.y;
-            scrapers[i].visible = linkPos.y < 0.3 && linkPos.y > -0.8;
+        const progress = (linkIndex / CONFIG.numLinks + rotation) % 1.0;
+        const pos = getChainPathPosition(progress);
+        const nextProgress = ((linkIndex + 1) / CONFIG.numLinks + rotation) % 1.0;
+        const nextPos = getChainPathPosition(nextProgress);
+        const linkAngle = Math.atan2(nextPos.y - pos.y, nextPos.x - pos.x);
 
-            if (linkPos.y < 0 && Math.random() < 0.1) {
-                spawnWaterDroplet(linkPos.x, linkPos.y, linkPos.z);
-            }
+        if (pos.y < 0.3 && pos.y > -0.8) {
+            scraperDummy.position.set(pos.x, pos.y - 0.02, 0);
+            scraperDummy.rotation.set(0, linkAngle, 0);
+            scraperDummy.updateMatrix();
+            scraperMesh.setMatrixAt(i, scraperDummy.matrix);
+            scraperMesh.setColorAt(i, new THREE.Color(0x8b6914));
+        } else {
+            scraperDummy.position.set(-9999, -9999, -9999);
+            scraperDummy.scale.set(0, 0, 0);
+            scraperDummy.updateMatrix();
+            scraperMesh.setMatrixAt(i, scraperDummy.matrix);
+            scraperDummy.scale.set(1, 1, 1);
+        }
+
+        if (pos.y < 0 && Math.random() < 0.1) {
+            spawnWaterDroplet(pos.x, pos.y, pos.z);
         }
     }
+    scraperMesh.instanceMatrix.needsUpdate = true;
+    if (scraperMesh.instanceColor) scraperMesh.instanceColor.needsUpdate = true;
 }
 
 function createWaterTrough() {
@@ -420,7 +489,7 @@ function createWaterParticles() {
     });
 
     const particles = new THREE.Points(particleGeo, particleMat);
-    particles.userData = { velocities, lifetimes, particleCount };
+    particles.userData = { velocities, lifetimes, count: particleCount };
     particles.name = 'waterParticles';
     waterParticles.push(particles);
     scene.add(particles);
@@ -460,14 +529,14 @@ function spawnWaterDroplet(x, y, z) {
     const splash = waterParticles.find(p => p.name === 'splashParticles');
     if (!splash) return;
 
-    const { positions } = splash.geometry.attributes;
+    const position = splash.geometry.attributes.position;
     const { velocities, lifetimes, active, count, nextIndex } = splash.userData;
 
     for (let j = 0; j < 3; j++) {
         const idx = (nextIndex + j) % count;
-        positions.array[idx * 3] = x + (Math.random() - 0.5) * 0.2;
-        positions.array[idx * 3 + 1] = y + Math.random() * 0.2;
-        positions.array[idx * 3 + 2] = z + (Math.random() - 0.5) * 0.3;
+        position.array[idx * 3] = x + (Math.random() - 0.5) * 0.2;
+        position.array[idx * 3 + 1] = y + Math.random() * 0.2;
+        position.array[idx * 3 + 2] = z + (Math.random() - 0.5) * 0.3;
 
         velocities[idx * 3] = (Math.random() - 0.5) * 1.5;
         velocities[idx * 3 + 1] = Math.random() * 2 + 1;
@@ -477,52 +546,52 @@ function spawnWaterDroplet(x, y, z) {
         active[idx] = 1;
     }
     splash.userData.nextIndex = (nextIndex + 3) % count;
-    positions.needsUpdate = true;
+    position.needsUpdate = true;
 }
 
 function updateWaterParticles(dt) {
     const gravity = -4.0;
 
     waterParticles.forEach(particles => {
-        const { positions } = particles.geometry.attributes;
+        const position = particles.geometry.attributes.position;
         const { velocities, lifetimes, active, count } = particles.userData;
 
         for (let i = 0; i < count; i++) {
             if (particles.name === 'waterParticles') {
                 velocities[i * 3 + 1] += gravity * dt;
 
-                positions.array[i * 3] += velocities[i * 3] * dt;
-                positions.array[i * 3 + 1] += velocities[i * 3 + 1] * dt;
-                positions.array[i * 3 + 2] += velocities[i * 3 + 2] * dt;
+                position.array[i * 3] += velocities[i * 3] * dt;
+                position.array[i * 3 + 1] += velocities[i * 3 + 1] * dt;
+                position.array[i * 3 + 2] += velocities[i * 3 + 2] * dt;
 
-                if (positions.array[i * 3 + 1] < -0.7) {
-                    positions.array[i * 3] = Math.random() * CONFIG.centerDistance;
-                    positions.array[i * 3 + 1] = 1.5 + Math.random() * 0.5;
-                    positions.array[i * 3 + 2] = (Math.random() - 0.5) * 1.2;
+                if (position.array[i * 3 + 1] < -0.7) {
+                    position.array[i * 3] = Math.random() * CONFIG.centerDistance;
+                    position.array[i * 3 + 1] = 1.5 + Math.random() * 0.5;
+                    position.array[i * 3 + 2] = (Math.random() - 0.5) * 1.2;
                     velocities[i * 3] = (Math.random() - 0.5) * 0.5;
                     velocities[i * 3 + 1] = -Math.random() * 1.5 - 0.5;
                     velocities[i * 3 + 2] = (Math.random() - 0.5) * 0.3;
                 }
 
-                if (positions.array[i * 3] < 0 || positions.array[i * 3] > CONFIG.centerDistance) {
-                    positions.array[i * 3] = Math.random() * CONFIG.centerDistance;
+                if (position.array[i * 3] < 0 || position.array[i * 3] > CONFIG.centerDistance) {
+                    position.array[i * 3] = Math.random() * CONFIG.centerDistance;
                 }
             } else if (particles.name === 'splashParticles' && active[i]) {
                 velocities[i * 3 + 1] += gravity * dt;
 
-                positions.array[i * 3] += velocities[i * 3] * dt;
-                positions.array[i * 3 + 1] += velocities[i * 3 + 1] * dt;
-                positions.array[i * 3 + 2] += velocities[i * 3 + 2] * dt;
+                position.array[i * 3] += velocities[i * 3] * dt;
+                position.array[i * 3 + 1] += velocities[i * 3 + 1] * dt;
+                position.array[i * 3 + 2] += velocities[i * 3 + 2] * dt;
 
                 lifetimes[i] -= dt;
-                if (lifetimes[i] <= 0 || positions.array[i * 3 + 1] < -0.7) {
+                if (lifetimes[i] <= 0 || position.array[i * 3 + 1] < -0.7) {
                     active[i] = 0;
-                    positions.array[i * 3] = -100;
-                    positions.array[i * 3 + 1] = -100;
+                    position.array[i * 3] = -100;
+                    position.array[i * 3 + 1] = -100;
                 }
             }
         }
-        positions.needsUpdate = true;
+        position.needsUpdate = true;
     });
 
     if (waterTrough) {
@@ -531,14 +600,24 @@ function updateWaterParticles(dt) {
 }
 
 function updateChainLinkPositions(positions) {
+    const tmpQuat = new THREE.Quaternion();
+    const tmpScale = new THREE.Vector3(1, 1, 1);
     Object.keys(positions).forEach((id, idx) => {
-        if (chainLinks[idx] && positions[id]) {
+        if (idx < CONFIG.numLinks && positions[id] && chainLinkMesh) {
             const [x, y, z] = positions[id];
-            chainLinks[idx].position.x = x;
-            chainLinks[idx].position.y = y + CONFIG.sprocketRadius;
-            chainLinks[idx].position.z = z || 0;
+            const tmpMatrix = new THREE.Matrix4();
+            chainLinkMesh.getMatrixAt(idx, tmpMatrix);
+            const tmpPos = new THREE.Vector3();
+            const tmpQ = new THREE.Quaternion();
+            tmpMatrix.decompose(tmpPos, tmpQ, tmpScale);
+
+            chainLinkDummy.position.set(x, y + CONFIG.sprocketRadius, z || 0);
+            chainLinkDummy.quaternion.copy(tmpQ);
+            chainLinkDummy.updateMatrix();
+            chainLinkMesh.setMatrixAt(idx, chainLinkDummy.matrix);
         }
     });
+    chainLinkMesh.instanceMatrix.needsUpdate = true;
 }
 
 function setupControls() {
@@ -588,8 +667,9 @@ function setupControls() {
 function setupCanvasEvents() {
     document.getElementById('showChain').addEventListener('change', e => {
         showChain = e.target.checked;
-        chainLinks.forEach(l => l.visible = showChain);
-        scrapers.forEach(s => s.visible = showChain);
+        if (chainLinkMesh) chainLinkMesh.visible = showChain;
+        if (pinMesh) pinMesh.visible = showChain;
+        if (scraperMesh) scraperMesh.visible = showChain;
     });
 
     document.getElementById('showWater').addEventListener('change', e => {
